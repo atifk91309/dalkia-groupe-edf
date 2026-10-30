@@ -1,0 +1,65 @@
+{
+  "id": "/",
+  "name": "DALKIA GROUPE eDF - Lighting Project",
+  "short_name": "DALKIA eDF",
+  "description": "DALKIA GROUPE eDF - Lighting replacement tracking. Building 82, Street Poles, Schools, PSAB. Sites, Light Stock, Daily Reports A-AG. Offline PWA",
+  "start_url": "/login?utm_source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["standalone"],
+  "orientation": "any",
+  "background_color": "#f0fdfa",
+  "theme_color": "#0f766e",
+  "categories": ["business", "productivity"],
+  "lang": "en",
+  "icons": [
+    {
+      "src": "/icon-circle-180.png",
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-circle-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-circle-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Add Site",
+      "url": "/dashboard/sites",
+      "description": "Add Building 82, Street Pole, School site",
+      "icons": [{ "src": "/icon-circle-180.png", "sizes": "180x180" }]
+    },
+    {
+      "name": "Light Stock",
+      "url": "/dashboard/lights",
+      "description": "View OSRAM 8.9W stock available installed",
+      "icons": [{ "src": "/icon-circle-180.png", "sizes": "180x180" }]
+    },
+    {
+      "name": "New Replacement",
+      "url": "/dashboard/replacements",
+      "description": "Daily replacement report A-AG Excel",
+      "icons": [{ "src": "/icon-circle-180.png", "sizes": "180x180" }]
+    },
+    {
+      "name": "Dashboard",
+      "url": "/dashboard",
+      "description": "Installed chart, low stock, top sites",
+      "icons": [{ "src": "/icon-circle-180.png", "sizes": "180x180" }]
+    }
+  ],
+  "launch_handler": {
+    "client_mode": ["navigate-existing", "auto"]
+  },
+  "handle_links": "preferred"
+}
