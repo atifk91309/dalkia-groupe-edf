@@ -23,9 +23,15 @@ async function findReplacement(id: string, workerId: string, role: string) {
 
 async function adjustLightStockAtomic(lightId: string, diff: number) {
   if (!lightId || diff === 0) return;
-  await Light.findOneAndUpdate(
-    { _id: lightId },
-    [
+  try {
+    if (!Types.ObjectId.isValid(lightId)) return;
+    const light = await Light.findById(lightId);
+    if (!light) {
+      console.log("Light not found, skipping:", lightId);
+      return;
+    }
+
+    const pipeline = [
       {
         $set: {
           stockInstalled: { $max: [0, { $add: ["$stockInstalled", diff] }] },
@@ -35,8 +41,16 @@ async function adjustLightStockAtomic(lightId: string, diff: number) {
           synced: true,
         },
       },
-    ]
-  );
+    ];
+
+    // Use raw collection — no Mongoose validation, no 'any' needed
+    await Light.collection.findOneAndUpdate(
+      { _id: new Types.ObjectId(lightId) },
+      pipeline
+    );
+  } catch (err) {
+    console.log("adjustLightStockAtomic skipped:", err instanceof Error ? err.message : err);
+  }
 }
 
 export async function GET(
@@ -131,6 +145,7 @@ export async function DELETE(
   const rep = await findReplacement(id, workerId, role);
   if (!rep) return NextResponse.json({ error: `Replacement not found ${id}` }, { status: 404 });
 
+  // Rollback stock but DON'T crash if light is already deleted
   if (rep.lightId && rep.newTotalLights) {
     await adjustLightStockAtomic(rep.lightId.toString(), -rep.newTotalLights);
   }

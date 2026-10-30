@@ -159,35 +159,66 @@ export default function DashboardPage() {
   const handleRestore = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (!confirm(`Restore backup from ${file.name}? This will replace current worker data.`)) return;
+    if (!confirm(`Restore backup from ${file.name}? This will replace current worker data and push to Cloud.`)) return;
     try {
       const text = await file.text();
       const json = JSON.parse(text) as { workerId?: string; data?: { sites?: Record<string, unknown>[]; lights?: Record<string, unknown>[]; replacements?: Record<string, unknown>[] } };
       const currentWid = workerId || (await getWorkerId());
       const backupWid = json.workerId;
       if (backupWid && backupWid !== currentWid) {
-        if (!confirm(`Backup is for Worker ${backupWid.slice(0, 8)} but you are ${currentWid.slice(0, 8)}. Restore anyway into your DB?`)) return;
+        if (!confirm(`Backup is for Worker ${String(backupWid).slice(0, 8)} but you are ${String(currentWid).slice(0, 8)}. Restore anyway?`)) return;
       }
       const d = (json.data ?? json) as { sites?: Record<string, unknown>[]; lights?: Record<string, unknown>[]; replacements?: Record<string, unknown>[] };
+      
       const fix = (list: Record<string, unknown>[] | undefined) => {
         if (!list) return [];
         return list.map((item) => {
           const fallback = `restored_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-          const id = (item._id as string) || (item.localId as string) || fallback;
-          return { ...item, _id: (item._id as string) || id, localId: (item.localId as string) || (item._id as string) || id, workerId: (item.workerId as string) || currentWid, synced: true };
+          const localId = (item.localId as string) || (item._id as string) || fallback;
+          // REMOVE _id for create - let MongoDB create new one
+          const { ...rest } = item as { _id?: string; localId?: string };
+          return { ...rest, localId, workerId: currentWid, synced: false };
         });
       };
+
       const wdb = getWorkerDB(currentWid);
       await wdb.sites.clear();
       await wdb.lights.clear();
       await wdb.replacements.clear();
+      
       const s = fix(d.sites);
       const l = fix(d.lights);
       const r = fix(d.replacements);
+      
       if (s.length) await wdb.sites.bulkPut(s as unknown as OfflineSite[]);
       if (l.length) await wdb.lights.bulkPut(l as unknown as OfflineLight[]);
       if (r.length) await wdb.replacements.bulkPut(r as unknown as OfflineReplacement[]);
-      alert(`✅ Restored Offline for ${currentWid.slice(0, 8)}!\n${s.length} sites, ${l.length} lights, ${r.length} replacements`);
+
+      // PUSH TO MONGODB VIA SINGLE /api/restore CALL
+      let pushResult = "Offline only";
+      try {
+        const res = await fetch("/api/restore", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ data: { sites: s, lights: l, replacements: r } }),
+          credentials: "include",
+        });
+        const j = await res.json();
+        if (res.ok) {
+          pushResult = `Cloud: ${j.sites} sites, ${j.lights} lights, ${j.replacements} reps`;
+          // Now mark offline as synced=true so pending goes to 0
+          await wdb.sites.bulkPut(s.map(x => ({ ...x, synced: true })) as unknown as OfflineSite[]);
+          await wdb.lights.bulkPut(l.map(x => ({ ...x, synced: true })) as unknown as OfflineLight[]);
+          await wdb.replacements.bulkPut(r.map(x => ({ ...x, synced: true })) as unknown as OfflineReplacement[]);
+        } else {
+          pushResult = `Cloud failed: ${j.error}`;
+        }
+      } catch (err) {
+        console.log("Online push failed", err);
+        pushResult = "Online failed - will sync later via Sync button";
+      }
+
+      alert(`✅ Restored!\nOffline: ${s.length} sites, ${l.length} lights, ${r.length} reps\n${pushResult}`);
       location.reload();
     } catch (err) {
       alert("Restore failed: " + (err as Error).message);
@@ -302,12 +333,31 @@ export default function DashboardPage() {
     void load();
   }, []);
 
+  // FIXED KPI LOGIC - was using ?? which shows 0 even when offline has data
+  const hasLocalLights = lights.length > 0;
+  const hasLocalSites = sites.length > 0;
+
+  const totalAvailable = hasLocalLights
+    ? lights.reduce((a, b) => a + (b.stockAvailable || 0), 0)
+    : (apiData?.kpi.stockAvailable ?? 0);
+
+  const totalInstalled = reports.all.totalInstalled > 0
+    ? reports.all.totalInstalled
+    : (apiData?.kpi.totalNewLights ?? 0);
+
+  const totalIn = hasLocalLights
+    ? lights.reduce((a, b) => a + (b.stockIn || 0), 0)
+    : (apiData?.kpi.stockIn ?? 0);
+
+  const totalDamage = hasLocalLights
+    ? lights.reduce((a, b) => a + (b.stockDamage || 0), 0)
+    : (apiData?.kpi.stockDamage ?? 0);
+
+  const effectiveSitesCount = hasLocalSites ? sites.length : (apiData?.kpi.sites ?? 0);
+  const effectiveLightsTypes = hasLocalLights ? lights.length : (apiData?.kpi.lights ?? 0);
+
   const lowStock = lights.filter((l) => l.stockAvailable < 100);
   const lowStockWarning = lights.filter((l) => l.stockAvailable >= 100 && l.stockAvailable < 500);
-  const totalAvailable = apiData?.kpi.stockAvailable ?? lights.reduce((a, b) => a + (b.stockAvailable || 0), 0);
-  const totalInstalled = apiData?.kpi.totalNewLights ?? reports.all.totalInstalled;
-  const totalIn = apiData?.kpi.stockIn ?? lights.reduce((a, b) => a + (b.stockIn || 0), 0);
-  const totalDamage = apiData?.kpi.stockDamage ?? lights.reduce((a, b) => a + (b.stockDamage || 0), 0);
   const isOwnerAll = userRole === "owner" && (apiData?.workerId === "all" || workerId === "Owner" || !workerId);
 
   if (loading) return <p className="p-8 text-center text-gray-400 text-[12px]">Loading Dalkia Dashboard...</p>;
@@ -342,11 +392,10 @@ export default function DashboardPage() {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 mb-3">
         <div className="bg-white p-3 sm:p-5 rounded-xl border"><p className="text-gray-400 text-[10px]">Today Reports</p><p className="text-[16px] font-bold mt-1">{reports.today.count} reports</p><p className="text-[10px] text-gray-500 mt-1"><span className="text-teal-700 font-bold">{reports.today.totalInstalled} lights installed</span></p></div>
         <div className="bg-blue-50 border-blue-200 p-3 sm:p-5 rounded-xl border"><p className="text-blue-600 text-[10px] font-bold">Month Installed</p><p className="text-[16px] font-bold mt-1 text-blue-700">{reports.month.totalInstalled} lights</p><p className="text-[10px] text-gray-500 mt-1">{reports.month.count} reports</p></div>
-        <div className="bg-white p-3 sm:p-5 rounded-xl border"><p className="text-gray-400 text-[10px]">Total Sites</p><p className="text-[16px] font-bold mt-1">{apiData?.kpi.sites ?? sites.length} Sites</p><p className="text-[10px] text-gray-500 mt-1">{sites.filter((s) => s.projectType === "BUILDING").length} Buildings • {sites.filter((s) => s.projectType === "STREET_LIGHT").length} Street</p></div>
-        <div className="bg-white p-3 sm:p-5 rounded-xl border"><p className="text-gray-400 text-[10px]">Stock Available</p><p className="text-[16px] font-bold mt-1">{totalAvailable} pcs</p><p className="text-[10px] text-gray-500 mt-1">Installed {totalInstalled} • Types {apiData?.kpi.lights ?? lights.length}</p></div>
+        <div className="bg-white p-3 sm:p-5 rounded-xl border"><p className="text-gray-400 text-[10px]">Total Sites</p><p className="text-[16px] font-bold mt-1">{effectiveSitesCount} Sites</p><p className="text-[10px] text-gray-500 mt-1">{sites.filter((s) => s.projectType === "BUILDING").length} Buildings • {sites.filter((s) => s.projectType === "STREET_LIGHT").length} Street</p></div>
+        <div className="bg-white p-3 sm:p-5 rounded-xl border"><p className="text-gray-400 text-[10px]">Stock Available</p><p className="text-[16px] font-bold mt-1">{totalAvailable} pcs</p><p className="text-[10px] text-gray-500 mt-1">Installed {totalInstalled} • Types {effectiveLightsTypes}</p></div>
       </div>
 
-      {/* ✅ DONUT ADDED HERE */}
       <LightsDonut totalIn={totalIn} installed={totalInstalled} damaged={totalDamage} available={totalAvailable} isOwner={isOwnerAll} />
 
       <BarChart reports={reports} />

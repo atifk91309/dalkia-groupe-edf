@@ -168,20 +168,26 @@ export async function POST(req: NextRequest) {
   });
 
   if (newTotalLights > 0) {
-    await Light.findOneAndUpdate(
-      { _id: resolvedLight.mongoId },
-      [
+    try {
+      const pipeline = [
         {
           $set: {
-            stockInstalled: { $add: ["$stockInstalled", newTotalLights] },
+            stockInstalled: { $max: [0, { $add: ["$stockInstalled", newTotalLights] }] },
             stockAvailable: {
-              $max: [0, { $subtract: [{ $subtract: ["$stockIn", "$stockDamage"] }, { $add: ["$stockInstalled", newTotalLights] }] }],
+              $max: [0, { $subtract: [{ $subtract: ["$stockIn", "$stockDamage"] }, { $max: [0, { $add: ["$stockInstalled", newTotalLights] }] }] }],
             },
             synced: true,
           },
         },
-      ]
-    );
+      ];
+
+      await Light.collection.findOneAndUpdate(
+        { _id: new Types.ObjectId(resolvedLight.mongoId) },
+        pipeline
+      );
+    } catch (err) {
+      console.log("Stock update skipped on create:", err instanceof Error ? err.message : err);
+    }
   }
 
   return NextResponse.json(replacement, { status: 201 });

@@ -252,18 +252,52 @@ function ReplacementsContent() {
 
   const deleteRep = async (r: OfflineReplacement) => {
   if (!confirm(`Delete ${r.newWattageLabel} - ${r.newTotalLights} pcs?`)) return;
-  const wid = workerId || await getWorkerId() || r.workerId || "local";
+  
+  const wid = workerId || (await getWorkerId()) || r.workerId || "local";
   const wdb = getWorkerDB(wid);
-  const foundLight = lights.find(l=> l._id===r.lightId || l.localId===r.lightId);
-  const curId = foundLight?.localId || r.lightId;
-  const cur = curId ? await wdb.lights.get(curId) as OfflineLight | undefined : undefined;
-  if (cur) {
-    const newInstalled = Math.max(0,(cur.stockInstalled||0)-r.newTotalLights);
-    await wdb.lights.put({ ...cur, stockInstalled: newInstalled, stockAvailable: Math.max(0, cur.stockIn - (cur.stockDamage||0) - newInstalled) });
+
+  try {
+    // Find light by both _id and localId — robust
+    const allLights = await wdb.lights.toArray() as OfflineLight[];
+    const curLight = allLights.find(
+      (l) => l.localId === r.lightId || l._id === r.lightId
+    );
+
+    if (curLight) {
+      const newInstalled = Math.max(0, (curLight.stockInstalled || 0) - r.newTotalLights);
+      const newAvailable = Math.max(
+        0,
+        curLight.stockIn - (curLight.stockDamage || 0) - newInstalled
+      );
+      await wdb.lights.put({
+        ...curLight,
+        stockInstalled: newInstalled,
+        stockAvailable: newAvailable,
+      });
+    } else {
+      console.log("Light already deleted offline, skipping stock rollback");
+    }
+
+    // Delete replacement locally first — always works
+    await wdb.replacements.delete(r.localId);
+    setAllReps((prev) => prev.filter((x) => x.localId !== r.localId));
+  } catch (e) {
+    console.log("Offline delete error:", e);
+    // Still try to delete locally even if stock fails
+    await wdb.replacements.delete(r.localId);
+    setAllReps((prev) => prev.filter((x) => x.localId !== r.localId));
   }
-  await wdb.replacements.delete(r.localId);
-  setAllReps(prev => prev.filter(x => x.localId !== r.localId));
-  try { await fetch(`/api/replacements/${r._id || r.localId}`, { method: "DELETE", credentials: "include" }); } catch {}
+
+  // Try server delete — but don't fail if offline or light missing
+  try {
+    await fetch(`/api/replacements/${r._id || r.localId}`, {
+      method: "DELETE",
+      credentials: "include",
+    });
+  } catch {
+    console.log("Server delete failed - will sync later, offline ok");
+  }
+
   await loadAll();
 };
 
